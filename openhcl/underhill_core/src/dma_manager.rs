@@ -6,14 +6,20 @@
 //! The `GlobalDmaManager` creates DMA buffers for different devices.
 //! The `DmaClientImpl` struct implements the `user_driver::DmaClient` trait.
 
+use crate::page_allocator::PageAllocator;
+use anyhow::Context;
 use parking_lot::Mutex;
 use user_driver::DmaTransaction;
+use std::mem::MaybeUninit;
 use std::sync::Arc;
 use user_driver::memory::MemoryBlock;
 use user_driver::vfio::VfioDmaBuffer;
 use user_driver::MemoryBacking;
 use virt_mshv_vtl::UhPartition;
 use memory_range::MemoryRange;
+
+// Define PAGE_SIZE constant
+const PAGE_SIZE: u64 = 4096;
 
 pub struct GlobalDmaManager {
     inner: Arc<Mutex<GlobalDmaManagerInner>>,
@@ -61,6 +67,7 @@ impl GlobalDmaManager {
     fn create_client_internal(
         inner: &Arc<Mutex<GlobalDmaManagerInner>>,
         device_name: String,
+        bounce_buffer_page_limit: u64
     ) -> anyhow::Result<Arc<DmaClientImpl>> {
         let manager_inner = inner.lock();
         let allocator = {
@@ -69,9 +76,14 @@ impl GlobalDmaManager {
                 .map_err(|e| anyhow::anyhow!("Failed to get DMA buffer allocator: {:?}", e))?
         };
 
+        // Create pageAllocator for client
+        let mem = allocator.create_dma_buffer((bounce_buffer_page_limit * PAGE_SIZE).try_into().unwrap())
+            .map_err(|e| anyhow::anyhow!("Failed to create DMA buffer: {:?}", e))?;
+
         let client = DmaClientImpl {
             _dma_manager_inner: inner.clone(),
-            dma_buffer_allocator: Some(allocator.clone()), // Set the allocator now
+            dma_buffer_allocator: Some(allocator.clone()),
+            alloc: PageAllocator::new(mem),
         };
 
         let arc_client = Arc::new(client);
@@ -91,6 +103,7 @@ pub struct DmaClientImpl {
     /// This is added to support map/pin functionality in the future.
     _dma_manager_inner: Arc<Mutex<GlobalDmaManagerInner>>,
     dma_buffer_allocator: Option<Arc<dyn VfioDmaBuffer>>,
+    alloc: PageAllocator,
 }
 
 impl user_driver::DmaClient for DmaClientImpl {
@@ -169,7 +182,7 @@ pub struct DmaClientSpawner {
 
 impl DmaClientSpawner {
     /// Creates a new DMA client with the given device name.
-    pub fn create_client(&self, device_name: String) -> anyhow::Result<Arc<DmaClientImpl>> {
-        GlobalDmaManager::create_client_internal(&self.dma_manager_inner, device_name)
+    pub fn create_client(&self, device_name: String, bounce_buffer_page_limit: u64) -> anyhow::Result<Arc<DmaClientImpl>> {
+        GlobalDmaManager::create_client_internal(&self.dma_manager_inner, device_name, bounce_buffer_page_limit)
     }
 }

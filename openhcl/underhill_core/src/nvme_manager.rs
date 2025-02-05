@@ -292,7 +292,7 @@ impl NvmeManagerWorker {
             hash_map::Entry::Vacant(entry) => {
                 let dma_client = self
                     .dma_client_spawner
-                    .create_client(format!("nvme_{}", pci_id))
+                    .create_client(format!("nvme_{}", pci_id), 128)
                     .map_err(InnerError::DmaClient)?;
 
                 let device = VfioDevice::new(&self.driver_source, entry.key(), dma_client)
@@ -354,7 +354,7 @@ impl NvmeManagerWorker {
 
             let dma_client = self
                 .dma_client_spawner
-                .create_client(format!("nvme_{}", pci_id))?;
+                .create_client(format!("nvme_{}", pci_id), 128)?;
             let vfio_device =
                 // This code can wait on each VFIO device until it is arrived.
                 // A potential optimization would be to delay VFIO operation
