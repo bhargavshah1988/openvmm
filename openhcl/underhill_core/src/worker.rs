@@ -1894,7 +1894,7 @@ async fn new_underhill_vm(
         },
     );
 
-    let dma_manager = GlobalDmaManager::new(vfio_dma_buffer_spawner);
+    let dma_manager = GlobalDmaManager::new(vfio_dma_buffer_spawner, partition.clone());
     let nvme_manager = if env_cfg.nvme_vfio {
         let save_restore_supported = env_cfg.nvme_keep_alive; //&& private_pool_spanwer.is_some();
 

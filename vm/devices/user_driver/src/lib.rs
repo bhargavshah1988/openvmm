@@ -11,6 +11,7 @@ use std::sync::Arc;
 use inspect::Inspect;
 use interrupt::DeviceInterrupt;
 use memory::MemoryBlock;
+use memory_range::MemoryRange;
 
 pub mod backoff;
 pub mod emulated;
@@ -71,8 +72,79 @@ pub trait HostDmaAllocator: Send + Sync {
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
 }
 
+#[derive(Debug)]
+pub enum DmaError {
+    InitializationFailed,
+    MapFailed,
+    UnmapFailed,
+    PinFailed,
+    BounceBufferFailed,
+}
+
+/// Enum representing memory backing type.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum MemoryBacking {
+    Pinned,
+    PrePinned,
+    BounceBuffer,
+    Physical,
+}
+
+#[derive(Debug, Clone)]
+pub struct DmaTransectionOptions {
+    pub force_bounce_buffer: bool, // Always use bounce buffers, even if pinning succeeds
+}
+
+pub struct DmaTransactionHandler {
+    pub transactions: Vec<DmaTransaction>,
+}
+
+pub struct DmaTransaction {
+    dma_addr: u64,
+    size: u64,
+    original_addr: u64,
+    backing: MemoryBacking,
+}
+
+impl DmaTransaction {
+    /// Creates a new `DmaTransaction` with controlled field access
+    pub fn new(dma_addr: u64, size: u64, original_addr: u64, backing: MemoryBacking) -> Self {
+        Self {
+            dma_addr,
+            size,
+            original_addr,
+            backing,
+        }
+    }
+
+    /// Public getter methods
+    pub fn dma_addr(&self) -> u64 {
+        self.dma_addr
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub fn backing(&self) -> MemoryBacking {
+        self.backing
+    }
+
+    pub fn original_addr(&self) -> u64 {
+        self.original_addr
+    }
+}
+
 pub trait DmaClient: Send + Sync {
     fn allocate_dma_buffer(&self, total_size: usize) -> anyhow::Result<MemoryBlock>;
 
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
+
+    fn map_dma_ranges(
+        &self,
+        ranges: &[MemoryRange],
+        options: Option<&DmaTransectionOptions>,
+    ) -> Result<DmaTransactionHandler, DmaError>;
+
+    fn unmap_dma_ranges(&self, dma_transactions: &[DmaTransaction]) -> Result<(), DmaError>;
 }

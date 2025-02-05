@@ -1967,6 +1967,14 @@ impl UhPartition {
             );
         }
     }
+
+    pub fn pin_gpa_ranges(&self, ranges: &[MemoryRange]) -> Result<(), HvError> {
+        self.inner.hcl.pin_gpa_ranges(ranges)
+    }
+
+    pub fn unpin_gpa_ranges(&self, ranges: &[MemoryRange]) -> Result<(), HvError> {
+        self.inner.hcl.unpin_gpa_ranges(ranges)
+    }
 }
 
 #[cfg(guest_arch = "x86_64")]

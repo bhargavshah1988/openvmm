@@ -13,6 +13,7 @@ use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
 use crate::DmaClient;
 use crate::HostDmaAllocator;
+use crate::MemoryRange;
 use anyhow::Context;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
@@ -292,6 +293,21 @@ impl DmaClient for EmulatedDmaAllocator {
 
     fn attach_dma_buffer(&self, _len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
         anyhow::bail!("restore is not supported for emulated DMA")
+    }
+
+    fn map_dma_ranges(
+        &self,
+        ranges: &[MemoryRange],
+        options: Option<&crate::DmaTransectionOptions>,
+    ) -> Result<crate::DmaTransactionHandler, crate::DmaError> {
+        unimplemented!()
+    }
+
+    fn unmap_dma_ranges(
+        &self,
+        dma_transactions: &[crate::DmaTransaction],
+    ) -> Result<(), crate::DmaError> {
+        unimplemented!()
     }
 }
 
