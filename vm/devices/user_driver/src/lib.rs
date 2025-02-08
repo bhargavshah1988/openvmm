@@ -9,6 +9,7 @@
 use inspect::Inspect;
 use interrupt::DeviceInterrupt;
 use memory::MemoryBlock;
+use memory_range::MemoryRange;
 use std::sync::Arc;
 
 pub mod backoff;
@@ -70,10 +71,92 @@ pub trait HostDmaAllocator: Send + Sync {
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
 }
 
+#[derive(Debug)]
+pub enum DmaError {
+    InitializationFailed,
+    MapFailed,
+    UnmapFailed,
+    PinFailed,
+    BounceBufferFailed,
+}
+/// Enum representing memory backing type.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum MemoryBacking {
+    Pinned,
+    PrePinned,
+    BounceBuffer,
+    Physical,
+}
+#[derive(Debug, Clone)]
+pub struct DmaTransectionOptions {
+    pub force_bounce_buffer: bool, // Always use bounce buffers, even if pinning succeeds
+}
+pub struct DmaTransactionHandler {
+    pub transactions: Vec<DmaTransaction>,
+}
+
+pub struct ContiguousBuffer {
+    offset: u32,
+    len: u64,
+    padding_len: u32,
+    committed: bool,
+    pub gpa: u64,
+}
+
+pub struct DmaTransaction {
+    dma_buffer: ContiguousBuffer,
+    original_addr: u64,
+    backing: MemoryBacking,
+}
+impl DmaTransaction {
+    /// Creates a new `DmaTransaction` with controlled field access
+    pub fn new(dma_buffer: ContiguousBuffer, original_addr: u64, backing: MemoryBacking) -> Self {
+        Self {
+            dma_buffer,
+            original_addr,
+            backing,
+        }
+    }
+    /// Public getter methods
+    pub fn dma_addr(&self) -> u64 {
+        self.dma_buffer.gpa
+    }
+    pub fn size(&self) -> u64 {
+        self.dma_buffer.len
+    }
+    pub fn backing(&self) -> MemoryBacking {
+        self.backing
+    }
+    pub fn original_addr(&self) -> u64 {
+        self.original_addr
+    }
+}
+
 pub trait DmaClient: Send + Sync {
     /// Allocate a new DMA buffer.
     fn allocate_dma_buffer(&self, total_size: usize) -> anyhow::Result<MemoryBlock>;
 
     /// Attach to a previously allocated memory block
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
+
+    fn map_dma_ranges(
+        &self,
+        ranges: &[MemoryRange],
+        options: Option<&DmaTransectionOptions>,
+    ) -> Result<DmaTransactionHandler, DmaError>;
+
+
+    fn unmap_dma_ranges(&self, dma_transactions: &[DmaTransaction]) -> Result<(), DmaError>;
+}
+
+impl ContiguousBuffer {
+    pub fn new(offset: u32, len: u64, padding_len: u32, gpa: u64) -> Self {
+        Self {
+            offset,
+            len,
+            padding_len,
+            committed: false,
+            gpa,
+        }
+    }
 }
