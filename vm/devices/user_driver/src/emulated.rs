@@ -13,10 +13,10 @@ use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
 use crate::DmaClient;
 use crate::HostDmaAllocator;
-use crate::MemoryRange;
 use anyhow::Context;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
+use guestmem::ranges::PagedRange;
 use guestmem::AlignedHeapMemory;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryAccess;
@@ -297,7 +297,8 @@ impl DmaClient for EmulatedDmaAllocator {
 
     fn map_dma_ranges(
         &self,
-        ranges: &[MemoryRange],
+        guest_memory: &GuestMemory,
+        mem: PagedRange<'_>,
         options: Option<&crate::DmaTransectionOptions>,
     ) -> Result<crate::DmaTransactionHandler, crate::DmaError> {
         unimplemented!()

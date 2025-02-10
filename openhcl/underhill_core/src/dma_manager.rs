@@ -12,7 +12,7 @@ use user_driver::memory::MemoryBlock;
 use user_driver::vfio::VfioDmaBuffer;
 use user_driver::memory::PAGE_SIZE64;
 use user_driver::memory::PAGE_SIZE32;
-use std::sync::atomic::AtomicU8;
+use user_driver::memory::PAGE_SIZE;
 use event_listener::Event;
 use virt_mshv_vtl::UhPartition;
 use memory_range::MemoryRange;
@@ -20,6 +20,9 @@ use user_driver::DmaTransaction;
 use user_driver::ContiguousBuffer;
 use user_driver::MemoryBacking;
 use parking_lot::Condvar;
+use guestmem::GuestMemory;
+use guestmem::ranges::PagedRange;
+use user_driver::DmaError;
 
 pub struct GlobalDmaManager {
     inner: Arc<Mutex<GlobalDmaManagerInner>>,
@@ -129,43 +132,42 @@ impl DmaClientImpl
         self.condvar.notify_one();
     }
 
-    /// Write data to the memory block at the given offset.
-    fn write(&mut self, buffer: DmaBuffer, data: &[u8]) -> anyhow::Result<()> {
-        if buffer.size < data.len() {
-            return Err(anyhow::anyhow!("Buffer size is smaller than data length"));
-        }
+    //fn write(&mut self, buffer: DmaBuffer, data: &[u8]) -> anyhow::Result<()> {
+    //    if buffer.size < data.len() {
+    //        return Err(anyhow::anyhow!("Buffer size is smaller than data length"));
+    //    }
 
-        let start_offset = buffer.offset;
-        let end_offset = start_offset + data.len();
+    //    let start_offset = buffer.offset;
+    //    let end_offset = start_offset + data.len();
 
-        if end_offset > self.mem.len() {
-            return Err(anyhow::anyhow!("Write exceeds memory block bounds"));
-        }
+    //    if end_offset > self.mem.len() {
+    //        return Err(anyhow::anyhow!("Write exceeds memory block bounds"));
+    //    }
 
-        let start_page = start_offset / PAGE_SIZE32 as usize;
-        let offset_in_page = start_offset % PAGE_SIZE32 as usize;
+    //    let start_page = start_offset / PAGE_SIZE32 as usize;
+    //    let offset_in_page = start_offset % PAGE_SIZE32 as usize;
 
-        // Get the physical frame number (PFN)
-        if let Some(&pfn) = self.mem.pfns().get(start_page as usize) {
-            let gpa = pfn * PAGE_SIZE64 + offset_in_page as u64;
-            self.mem.write_at(gpa as usize, data);
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("Invalid memory page"))
-        }
-    }
+    //    // Get the physical frame number (PFN)
+    //    if let Some(&pfn) = self.mem.pfns().get(start_page as usize) {
+    //        let gpa = pfn * PAGE_SIZE64 + offset_in_page as u64;
+    //        self.mem.write_at(gpa as usize, data);
+    //        Ok(())
+    //    } else {
+    //        Err(anyhow::anyhow!("Invalid memory page"))
+    //    }
+    //}
 
-    fn read(&self, buffer: &DmaBuffer, output: &mut [u8]) -> anyhow::Result<()> {
-        if buffer.size < output.len() {
-            return Err(anyhow::anyhow!("Buffer size is smaller than requested read length"));
-        }
+    //fn read(&self, buffer: &DmaBuffer, output: &mut [u8]) -> anyhow::Result<()> {
+    //    if buffer.size < output.len() {
+    //        return Err(anyhow::anyhow!("Buffer size is smaller than requested read length"));
+    //    }
 
-        let start_page = buffer.offset / PAGE_SIZE32 as usize;
-        let offset_in_page = buffer.offset % PAGE_SIZE32 as usize;
+    //    let start_page = buffer.offset / PAGE_SIZE32 as usize;
+    //    let offset_in_page = buffer.offset % PAGE_SIZE32 as usize;
 
-        self.mem.read_at(start_page * PAGE_SIZE32 as usize + offset_in_page, output);
-        Ok(())
-    }
+    //    self.mem.read_at(start_page * PAGE_SIZE32 as usize + offset_in_page, output);
+    //    Ok(())
+    //}
 }
 
 impl user_driver::DmaClient for DmaClientImpl {
@@ -186,39 +188,104 @@ impl user_driver::DmaClient for DmaClientImpl {
 
     fn map_dma_ranges(
         &self,
-        ranges: &[MemoryRange],
+        guest_memory: &GuestMemory,
+        mem: PagedRange<'_>,
         options: Option<&user_driver::DmaTransectionOptions>,
-    ) -> Result<user_driver::DmaTransactionHandler, user_driver::DmaError> {
+    ) -> Result<user_driver::DmaTransactionHandler, DmaError> {
+        let mut dma_manager = self._dma_manager_inner.lock();
 
-        self._dma_manager_inner
-            .lock()
-            .manager_map_dma_transaction(ranges)
-            .map_err(|_| user_driver::DmaError::MapFailed)?;
+        let ranges = &mem.memoryranges();
+        let dma_transaction_handler;
+        let mut transactions = Vec::new();
 
-        let dma_transactions = ranges
-            .iter()
-            .map(|range| {
-                DmaTransaction::new(
-                    ContiguousBuffer::new(
+        match self._dma_manager_inner.lock().manager_map_dma_transaction(ranges) {
+            Ok(_) => {
+                let dma_transactions = ranges.iter().map(|range| {
+                    let contig_buf = ContiguousBuffer::new(
                         0,
                         range.len(),
-                        0,
+                    );
+
+                    DmaTransaction::new(
+                        contig_buf,
                         range.start(),
-                    ),
+                        MemoryBacking::Pinned,
+                    )
+                }).collect();
+
+                dma_transaction_handler = user_driver::DmaTransactionHandler { transactions: dma_transactions };
+            },
+            Err(_) => {
+
+                     // Mapping failed, allocate a bounce buffer
+            let mut total_size = mem.len();
+            let bounce_buffer = self.allocate(total_size);
+
+            let mut offset = 0;
+            let page_count = bounce_buffer.size / PAGE_SIZE64 as usize;
+
+            let mut remaining = total_size;
+            for i in 0..page_count {
+                // Determine how many bytes to copy for this page.
+                let len = PAGE_SIZE32.min(remaining.try_into().unwrap()) as usize;
+                remaining -=  len as usize;
+
+                // Compute the effective destination offset within the overall bounce buffer.
+                // For page i, the effective offset is:
+                let effective_offset = bounce_buffer.offset + i * PAGE_SIZE32 as usize;
+
+                // Convert the effective offset into a destination page and an offset within that page.
+                let dest_page = effective_offset / PAGE_SIZE32 as usize;
+                let offset_in_page = effective_offset - dest_page * PAGE_SIZE32 as usize;
+
+                // Compute the destination address using the parent's MemoryBlock PFNs.
+                // Here we use the PFN for dest_page, then add the offset within that page.
+                let dest_addr = self.mem.pfns()[dest_page] * PAGE_SIZE64 + offset_in_page as u64;
+
+                // Copy from the guest memory subrange into the destination slice.
+                // We assume that `mem.subrange(offset, len)` returns the guest subrange starting at the given offset with the specified length.
+                // And self.mem.as_mut_slice() gives us mutable access to the underlying MemoryBlock.
+                guest_memory.read_range_to_atomic(
+                    &mem.subrange(i * PAGE_SIZE32 as usize, len),
+                    &self.mem.as_slice()[dest_page * PAGE_SIZE as usize..][..len],
+                ).map_err(|e| DmaError::BounceBufferFailed)?;
+            }
+
+            let mut cumulative_offset: usize = 0;
+            for range in ranges {
+                // Each range's size as a u64.
+                let range_size = range.len(); // u64
+
+                let transaction_offset = bounce_buffer.offset + cumulative_offset;
+
+                let contig_buf = ContiguousBuffer::new(
+                    transaction_offset,
+                    range_size,
+                );
+
+                // Create a DMA transaction.
+                // The original_addr is taken from the guest range's starting address.
+                transactions.push(DmaTransaction::new(
+                    contig_buf,
                     range.start(),
-                    MemoryBacking::Pinned,
-                )
-            })
-            .collect();
-        Ok(user_driver::DmaTransactionHandler {
-            transactions: dma_transactions,
-        })
+                    MemoryBacking::BounceBuffer,
+                ));
+
+                cumulative_offset += range_size as usize;
+            }
+
+            dma_transaction_handler = user_driver::DmaTransactionHandler { transactions };
+
+            }
+        }
+
+        Ok(dma_transaction_handler)
     }
 
     fn unmap_dma_ranges(
         &self,
         dma_transactions: &[DmaTransaction],
-    ) -> Result<(), user_driver::DmaError> {
+    ) -> Result<(), DmaError> {
     let ranges: Vec<MemoryRange> = dma_transactions
         .iter()
         .filter_map(|transaction| {
@@ -233,7 +300,7 @@ impl user_driver::DmaClient for DmaClientImpl {
         self._dma_manager_inner
             .lock()
             .manager_unmap_dma_transaction(&ranges)
-            .map_err(|_| user_driver::DmaError::UnmapFailed)?;
+            .map_err(|_| DmaError::UnmapFailed)?;
     }
     Ok(())
     }

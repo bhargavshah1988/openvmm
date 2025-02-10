@@ -6,10 +6,11 @@
 // UNSAFETY: Manual memory management around buffers and mmap.
 #![expect(unsafe_code)]
 
+use guestmem::GuestMemory;
+use guestmem::ranges::PagedRange;
 use inspect::Inspect;
 use interrupt::DeviceInterrupt;
 use memory::MemoryBlock;
-use memory_range::MemoryRange;
 use std::sync::Arc;
 
 pub mod backoff;
@@ -96,11 +97,8 @@ pub struct DmaTransactionHandler {
 }
 
 pub struct ContiguousBuffer {
-    offset: u32,
+    offset: usize,
     len: u64,
-    padding_len: u32,
-    committed: bool,
-    pub gpa: u64,
 }
 
 pub struct DmaTransaction {
@@ -117,10 +115,7 @@ impl DmaTransaction {
             backing,
         }
     }
-    /// Public getter methods
-    pub fn dma_addr(&self) -> u64 {
-        self.dma_buffer.gpa
-    }
+
     pub fn size(&self) -> u64 {
         self.dma_buffer.len
     }
@@ -141,7 +136,8 @@ pub trait DmaClient: Send + Sync {
 
     fn map_dma_ranges(
         &self,
-        ranges: &[MemoryRange],
+        guest_memory: &GuestMemory,
+        mem: PagedRange<'_>,
         options: Option<&DmaTransectionOptions>,
     ) -> Result<DmaTransactionHandler, DmaError>;
 
@@ -149,13 +145,10 @@ pub trait DmaClient: Send + Sync {
 }
 
 impl ContiguousBuffer {
-    pub fn new(offset: u32, len: u64, padding_len: u32, gpa: u64) -> Self {
+    pub fn new(offset: usize, len: u64) -> Self {
         Self {
             offset,
             len,
-            padding_len,
-            committed: false,
-            gpa,
         }
     }
 }

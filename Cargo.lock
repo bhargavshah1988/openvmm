@@ -2571,6 +2571,7 @@ name = "guestmem"
 version = "0.0.0"
 dependencies = [
  "inspect",
+ "memory_range",
  "pal_event",
  "sparse_mmap",
  "thiserror 2.0.0",
