@@ -18,7 +18,7 @@ use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE32;
 use user_driver::memory::PAGE_SIZE64;
 use user_driver::vfio::VfioDmaBuffer;
-use user_driver::ContiguousBuffer;
+use user_driver::DmaBuffer;
 use user_driver::DmaError;
 use user_driver::DmaTransaction;
 use user_driver::MemoryBacking;
@@ -207,7 +207,7 @@ impl user_driver::DmaClient for DmaClientImpl {
                     let range_size = range.len(); // u64
                     let transaction_offset = bounce_buffer.offset + cumulative_offset;
 
-                    let contig_buf = ContiguousBuffer::new(transaction_offset, range_size);
+                    let contig_buf = DmaBuffer::new(transaction_offset, range_size as usize);
 
                     cumulative_offset += range_size as usize;
 
@@ -238,7 +238,7 @@ impl user_driver::DmaClient for DmaClientImpl {
                 let dma_transactions = ranges
                     .iter()
                     .map(|range| {
-                        let contig_buf = ContiguousBuffer::new(0, range.len());
+                        let contig_buf = DmaBuffer::new(0, range.len().try_into().unwrap());
 
                         DmaTransaction::new(
                             contig_buf,
@@ -298,7 +298,7 @@ impl user_driver::DmaClient for DmaClientImpl {
 
                     let transaction_offset = bounce_buffer.offset + cumulative_offset;
 
-                    let contig_buf = ContiguousBuffer::new(transaction_offset, range_size);
+                    let contig_buf = DmaBuffer::new(transaction_offset, range_size.try_into().unwrap());
 
                     // Create a DMA transaction.
                     // The original_addr is taken from the guest range's starting address.
@@ -372,7 +372,7 @@ impl user_driver::DmaClient for DmaClientImpl {
             if transaction.backing() == MemoryBacking::Pinned {
                 ranges.push(MemoryRange::new(
                     transaction.original_addr()
-                        ..transaction.original_addr() + transaction.size(),
+                        ..transaction.original_addr() + transaction.size() as u64,
                 ));
             }
         }
@@ -408,11 +408,6 @@ impl DmaClientSpawner {
 
 struct SimpleAllocator {
     free_list: Vec<Block>, // Sorted by offset.
-}
-
-struct DmaBuffer {
-    offset: usize,
-    size: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
