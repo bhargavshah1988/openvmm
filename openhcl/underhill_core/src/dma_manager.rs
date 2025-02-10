@@ -330,7 +330,7 @@ impl user_driver::DmaClient for DmaClientImpl {
 
         // Copy data back from the bounce buffer to user memory for RX transactions
         for transaction in dma_transactions {
-            if transaction.options().is_rx {
+            if transaction.options().is_rx  && transaction.backing() == MemoryBacking::BounceBuffer {
                 let src_offset = transaction.offset();
                 let src_len = transaction.size() as usize;
 
@@ -359,6 +359,12 @@ impl user_driver::DmaClient for DmaClientImpl {
                 bounce_buffers.push(DmaBuffer{
                     offset: src_offset,
                     size: src_len,
+                });
+            }
+            else if transaction.options().is_tx && transaction.backing() == MemoryBacking::BounceBuffer {
+                bounce_buffers.push(DmaBuffer{
+                    offset:transaction.offset(),
+                    size:transaction.size() as usize,
                 });
             }
 
