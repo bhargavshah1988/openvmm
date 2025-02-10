@@ -19,6 +19,7 @@ use memory_range::MemoryRange;
 use user_driver::DmaTransaction;
 use user_driver::ContiguousBuffer;
 use user_driver::MemoryBacking;
+use parking_lot::Condvar;
 
 pub struct GlobalDmaManager {
     inner: Arc<Mutex<GlobalDmaManagerInner>>,
@@ -78,7 +79,9 @@ impl GlobalDmaManager {
         let client = DmaClientImpl {
             _dma_manager_inner: inner.clone(),
             dma_buffer_allocator: Some(allocator.clone()),
-            buffer_manager : ContiguousBufferManager::new(mem)?,
+            allocator: Mutex::new(SimpleAllocator::new(mem.len())),
+            mem,
+            condvar: Condvar::new(),
         };
 
         let arc_client = Arc::new(client);
@@ -99,7 +102,70 @@ pub struct DmaClientImpl {
     /// This is added to support map/pin functionality in the future.
     _dma_manager_inner: Arc<Mutex<GlobalDmaManagerInner>>,
     dma_buffer_allocator: Option<Arc<dyn VfioDmaBuffer>>,
-    buffer_manager: ContiguousBufferManager,
+    allocator: Mutex<SimpleAllocator>,
+    mem: MemoryBlock,
+    condvar: Condvar
+}
+
+impl DmaClientImpl
+{
+   /// Blocking allocation: waits until memory is available.
+   fn allocate(&self, size: usize) -> DmaBuffer {
+    let mut alloc = self.allocator.lock();
+        loop {
+            if let Some(offset) = alloc.malloc(size) {
+                return DmaBuffer { offset, size };
+            }
+            // Wait for memory to be freed.
+            self.condvar.wait(&mut alloc);
+        }
+    }
+
+    /// Free a previously allocated DMA buffer and notify waiting threads.
+    fn free(&self, buffer: DmaBuffer) {
+        let mut alloc = self.allocator.lock();
+        alloc.free(buffer.offset, buffer.size);
+        // Wake up one waiting thread.
+        self.condvar.notify_one();
+    }
+
+    /// Write data to the memory block at the given offset.
+    fn write(&mut self, buffer: DmaBuffer, data: &[u8]) -> anyhow::Result<()> {
+        if buffer.size < data.len() {
+            return Err(anyhow::anyhow!("Buffer size is smaller than data length"));
+        }
+
+        let start_offset = buffer.offset;
+        let end_offset = start_offset + data.len();
+
+        if end_offset > self.mem.len() {
+            return Err(anyhow::anyhow!("Write exceeds memory block bounds"));
+        }
+
+        let start_page = start_offset / PAGE_SIZE32 as usize;
+        let offset_in_page = start_offset % PAGE_SIZE32 as usize;
+
+        // Get the physical frame number (PFN)
+        if let Some(&pfn) = self.mem.pfns().get(start_page as usize) {
+            let gpa = pfn * PAGE_SIZE64 + offset_in_page as u64;
+            self.mem.write_at(gpa as usize, data);
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Invalid memory page"))
+        }
+    }
+
+    fn read(&self, buffer: &DmaBuffer, output: &mut [u8]) -> anyhow::Result<()> {
+        if buffer.size < output.len() {
+            return Err(anyhow::anyhow!("Buffer size is smaller than requested read length"));
+        }
+
+        let start_page = buffer.offset / PAGE_SIZE32 as usize;
+        let offset_in_page = buffer.offset % PAGE_SIZE32 as usize;
+
+        self.mem.read_at(start_page * PAGE_SIZE32 as usize + offset_in_page, output);
+        Ok(())
+    }
 }
 
 impl user_driver::DmaClient for DmaClientImpl {
@@ -185,115 +251,73 @@ impl DmaClientSpawner {
     }
 }
 
-pub(crate) struct ContiguousBufferManager {
-    core: Mutex<ContiguousBufferCore>,
-    mem: MemoryBlock,
-    event: Event,
+struct SimpleAllocator {
+
+    free_list: Vec<Block>, // Sorted by offset.
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("out of contiguous buffer memory")]
-struct OutOfMemory;
-
-impl ContiguousBufferManager {
-    pub fn new(mem: MemoryBlock) -> Result<Self, anyhow::Error> {
-        let len = mem.len() as u32;
-        Ok(Self {
-            core: Mutex::new(ContiguousBufferCore::new(len)),
-            mem,
-            event: Event::new(),
-        })
-    }
-
-    pub async fn allocate(&self, len: u32) -> Result<ContiguousBuffer, OutOfMemory> {
-        loop {
-            let mut core = self.core.lock();
-            if let Some(buffer) = core.try_allocate(&self.mem, len) {
-                return Ok(buffer);
-            }
-            drop(core);
-            self.event.listen().await;
-        }
-    }
-
-    pub fn free(&self, offset: u32, len_with_padding: u32) {
-        let mut core = self.core.lock();
-        core.free(offset, len_with_padding);
-        drop(core);
-        self.event.notify(1);
-    }
-
-    pub fn as_slice(&self) -> &[AtomicU8] {
-        self.mem.as_slice()
-    }
+struct DmaBuffer {
+    offset: usize,
+    size: usize,
 }
 
-struct ContiguousBufferCore {
-    len: u32,
-    head: u32,
-    tail: u32,
+#[derive(Debug, Clone, Copy)]
+struct Block {
+    offset: usize,
+    size: usize,
 }
 
-impl ContiguousBufferCore {
-    fn new(len: u32) -> Self {
-        Self {
-            len,
-            head: 0,
-            tail: len - 1,
-        }
+impl SimpleAllocator {
+    fn new(size : usize) -> Self {
+        // Initially, the entire memory is free.
+        let free_list = vec![Block { offset: 0, size }];
+        Self { free_list }
     }
 
-    fn try_allocate(&mut self, mem: &MemoryBlock, len: u32) -> Option<ContiguousBuffer> {
-        let mut allocated_offset = self.head;
-        let mut len_with_padding = len;
-        let bytes_remaining_on_page = PAGE_SIZE32 - (allocated_offset % PAGE_SIZE32);
-
-        // Skip to next page if needed
-        let min_usable_bytes = 1500;
-        if len > bytes_remaining_on_page && bytes_remaining_on_page < min_usable_bytes {
-            allocated_offset = allocated_offset.wrapping_add(bytes_remaining_on_page);
-            len_with_padding += bytes_remaining_on_page;
-        }
-
-        let available_space = if self.head < self.tail {
-            self.tail - self.head
-        } else {
-            self.len - (self.head - self.tail)
-        };
-
-        if len_with_padding > available_space {
-            return None;
-        }
-
-        self.head = self.head.wrapping_add(len_with_padding);
-
-        let start_page = allocated_offset / PAGE_SIZE32;
-        let end_page = (allocated_offset + len_with_padding) / PAGE_SIZE32;
-        let offset_in_page = allocated_offset % PAGE_SIZE32;
-
-        // Compute GPA
-        let mut gpa = 0;
-        for page in start_page..end_page {
-            if let Some(&pfn) = mem.pfns().get(page as usize) {
-                if page == start_page {
-                    gpa = pfn * PAGE_SIZE64 + offset_in_page as u64;
+    /// Attempt to allocate a block of at least `size` bytes.
+    /// Returns the offset into the MemoryBlock if successful, or None if not.
+    fn malloc(&mut self, size: usize) -> Option<usize> {
+        for i in 0..self.free_list.len() {
+            let block = self.free_list[i];
+            if block.size >= size {
+                let allocated_offset = block.offset;
+                if block.size == size {
+                    // Perfect fit: remove the block.
+                    self.free_list.remove(i);
+                } else {
+                    // Otherwise, shrink the free block.
+                    self.free_list[i].offset += size;
+                    self.free_list[i].size -= size;
                 }
-            } else {
-                return None;
+                return Some(allocated_offset);
             }
         }
-
-        Some(ContiguousBuffer::new(
-            allocated_offset % self.len,
-            len as u64,
-            len_with_padding - len,
-            gpa,
-        ))
+        None
     }
 
-    fn free(&mut self, _offset: u32, len_with_padding: u32) {
-        self.tail = self.tail.wrapping_add(len_with_padding);
+    /// Free a previously allocated block.
+    fn free(&mut self, offset: usize, size: usize) {
+        let new_block = Block { offset, size };
+        let mut pos = 0;
+        while pos < self.free_list.len() && self.free_list[pos].offset < offset {
+            pos += 1;
+        }
+        self.free_list.insert(pos, new_block);
+        // Try to coalesce with the previous block.
+        if pos > 0 {
+            let prev = pos - 1;
+            if self.free_list[prev].offset + self.free_list[prev].size == self.free_list[pos].offset {
+                self.free_list[prev].size += self.free_list[pos].size;
+                self.free_list.remove(pos);
+                pos = prev;
+            }
+        }
+        // Try to coalesce with the next block.
+        if pos < self.free_list.len() - 1 {
+            if self.free_list[pos].offset + self.free_list[pos].size == self.free_list[pos + 1].offset {
+                self.free_list[pos].size += self.free_list[pos + 1].size;
+                self.free_list.remove(pos + 1);
+            }
+        }
     }
 }
-
-

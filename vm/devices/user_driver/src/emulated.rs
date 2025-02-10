@@ -13,6 +13,7 @@ use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
 use crate::DmaClient;
 use crate::HostDmaAllocator;
+use crate::MemoryRange;
 use anyhow::Context;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
@@ -30,7 +31,6 @@ use safeatomic::AtomicSliceOps;
 use std::ptr::NonNull;
 use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
-use crate::MemoryRange;
 
 /// An emulated device.
 pub struct EmulatedDevice<T> {

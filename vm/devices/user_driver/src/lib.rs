@@ -145,7 +145,6 @@ pub trait DmaClient: Send + Sync {
         options: Option<&DmaTransectionOptions>,
     ) -> Result<DmaTransactionHandler, DmaError>;
 
-
     fn unmap_dma_ranges(&self, dma_transactions: &[DmaTransaction]) -> Result<(), DmaError>;
 }
 
