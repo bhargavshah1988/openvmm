@@ -240,7 +240,6 @@ impl<'a> PagedRange<'a> {
             .map(|&gpn| MemoryRange::new(gpn * PAGE_SIZE64..(gpn + 1) * PAGE_SIZE64))
             .collect::<Vec<_>>()
     }
-
 }
 
 /// An iterator returned by [`PagedRange::ranges()`].

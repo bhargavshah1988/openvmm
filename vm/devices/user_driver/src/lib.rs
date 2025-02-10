@@ -6,8 +6,8 @@
 // UNSAFETY: Manual memory management around buffers and mmap.
 #![expect(unsafe_code)]
 
-use guestmem::GuestMemory;
 use guestmem::ranges::PagedRange;
+use guestmem::GuestMemory;
 use inspect::Inspect;
 use interrupt::DeviceInterrupt;
 use memory::MemoryBlock;
@@ -91,6 +91,8 @@ pub enum MemoryBacking {
 #[derive(Debug, Clone)]
 pub struct DmaTransectionOptions {
     pub force_bounce_buffer: bool, // Always use bounce buffers, even if pinning succeeds
+    pub is_rx: bool,               // Transaction is for RX
+    pub is_tx: bool,               // Transaction is for TX
 }
 pub struct DmaTransactionHandler {
     pub transactions: Vec<DmaTransaction>,
@@ -109,7 +111,12 @@ pub struct DmaTransaction {
 }
 impl DmaTransaction {
     /// Creates a new `DmaTransaction` with controlled field access
-    pub fn new(dma_buffer: ContiguousBuffer, original_addr: u64, options:DmaTransectionOptions,  backing: MemoryBacking) -> Self {
+    pub fn new(
+        dma_buffer: ContiguousBuffer,
+        original_addr: u64,
+        options: DmaTransectionOptions,
+        backing: MemoryBacking,
+    ) -> Self {
         Self {
             dma_buffer,
             original_addr,
@@ -148,9 +155,6 @@ pub trait DmaClient: Send + Sync {
 
 impl ContiguousBuffer {
     pub fn new(offset: usize, len: u64) -> Self {
-        Self {
-            offset,
-            len,
-        }
+        Self { offset, len }
     }
 }

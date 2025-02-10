@@ -7355,7 +7355,6 @@ dependencies = [
  "inspect",
  "inspect_counters",
  "libc",
- "memory_range",
  "mesh",
  "pal_async",
  "pal_event",

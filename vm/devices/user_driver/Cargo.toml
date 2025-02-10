@@ -22,7 +22,6 @@ safeatomic.workspace = true
 uevent.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
-memory_range.workspace = true
 
 anyhow.workspace = true
 parking_lot.workspace = true
