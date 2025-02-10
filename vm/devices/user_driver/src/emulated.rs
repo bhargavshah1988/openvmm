@@ -306,6 +306,8 @@ impl DmaClient for EmulatedDmaAllocator {
 
     fn unmap_dma_ranges(
         &self,
+        guest_memory: &GuestMemory,
+        mem: PagedRange<'_>,
         dma_transactions: &[crate::DmaTransaction],
     ) -> Result<(), crate::DmaError> {
         unimplemented!()

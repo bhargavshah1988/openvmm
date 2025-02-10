@@ -319,7 +319,12 @@ impl user_driver::DmaClient for DmaClientImpl {
         Ok(dma_transaction_handler)
     }
 
-    fn unmap_dma_ranges(&self, dma_transactions: &[DmaTransaction]) -> Result<(), DmaError> {
+    fn unmap_dma_ranges(
+        &self,
+        guest_memory: &GuestMemory,
+        mem: PagedRange<'_>,
+        dma_transactions: &[DmaTransaction],
+    ) -> Result<(), DmaError> {
         let ranges: Vec<MemoryRange> = dma_transactions
             .iter()
             .filter_map(|transaction| {

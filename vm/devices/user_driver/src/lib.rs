@@ -150,7 +150,12 @@ pub trait DmaClient: Send + Sync {
         options: DmaTransectionOptions,
     ) -> Result<DmaTransactionHandler, DmaError>;
 
-    fn unmap_dma_ranges(&self, dma_transactions: &[DmaTransaction]) -> Result<(), DmaError>;
+    fn unmap_dma_ranges(
+        &self,
+        guest_memory: &GuestMemory,
+        mem: PagedRange<'_>,
+        dma_transactions: &[DmaTransaction],
+    ) -> Result<(), DmaError>;
 }
 
 impl ContiguousBuffer {
