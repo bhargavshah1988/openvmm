@@ -105,14 +105,16 @@ pub struct DmaTransaction {
     dma_buffer: ContiguousBuffer,
     original_addr: u64,
     backing: MemoryBacking,
+    options: DmaTransectionOptions,
 }
 impl DmaTransaction {
     /// Creates a new `DmaTransaction` with controlled field access
-    pub fn new(dma_buffer: ContiguousBuffer, original_addr: u64, backing: MemoryBacking) -> Self {
+    pub fn new(dma_buffer: ContiguousBuffer, original_addr: u64, options:DmaTransectionOptions,  backing: MemoryBacking) -> Self {
         Self {
             dma_buffer,
             original_addr,
             backing,
+            options,
         }
     }
 
@@ -138,7 +140,7 @@ pub trait DmaClient: Send + Sync {
         &self,
         guest_memory: &GuestMemory,
         mem: PagedRange<'_>,
-        options: Option<&DmaTransectionOptions>,
+        options: DmaTransectionOptions,
     ) -> Result<DmaTransactionHandler, DmaError>;
 
     fn unmap_dma_ranges(&self, dma_transactions: &[DmaTransaction]) -> Result<(), DmaError>;

@@ -299,7 +299,7 @@ impl DmaClient for EmulatedDmaAllocator {
         &self,
         guest_memory: &GuestMemory,
         mem: PagedRange<'_>,
-        options: Option<&crate::DmaTransectionOptions>,
+        options: crate::DmaTransectionOptions,
     ) -> Result<crate::DmaTransactionHandler, crate::DmaError> {
         unimplemented!()
     }

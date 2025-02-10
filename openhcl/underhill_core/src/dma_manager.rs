@@ -190,7 +190,7 @@ impl user_driver::DmaClient for DmaClientImpl {
         &self,
         guest_memory: &GuestMemory,
         mem: PagedRange<'_>,
-        options: Option<&user_driver::DmaTransectionOptions>,
+        options: user_driver::DmaTransectionOptions,
     ) -> Result<user_driver::DmaTransactionHandler, DmaError> {
         let mut dma_manager = self._dma_manager_inner.lock();
 
@@ -209,6 +209,7 @@ impl user_driver::DmaClient for DmaClientImpl {
                     DmaTransaction::new(
                         contig_buf,
                         range.start(),
+                        options.clone(),
                         MemoryBacking::Pinned,
                     )
                 }).collect();
@@ -268,6 +269,7 @@ impl user_driver::DmaClient for DmaClientImpl {
                 transactions.push(DmaTransaction::new(
                     contig_buf,
                     range.start(),
+                    options.clone(),
                     MemoryBacking::BounceBuffer,
                 ));
 
