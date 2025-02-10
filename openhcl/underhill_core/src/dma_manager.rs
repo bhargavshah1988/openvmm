@@ -325,25 +325,65 @@ impl user_driver::DmaClient for DmaClientImpl {
         mem: PagedRange<'_>,
         dma_transactions: &[DmaTransaction],
     ) -> Result<(), DmaError> {
-        let ranges: Vec<MemoryRange> = dma_transactions
-            .iter()
-            .filter_map(|transaction| {
-                if transaction.backing() == MemoryBacking::Pinned {
-                    Some(MemoryRange::new(
-                        transaction.original_addr()
-                            ..transaction.original_addr() + transaction.size(),
-                    ))
-                } else {
-                    None
+        let mut ranges: Vec<MemoryRange> = Vec::new();
+        let mut bounce_buffers: Vec<DmaBuffer> = Vec::new(); // Track buffers for deallocation
+
+        // Copy data back from the bounce buffer to user memory for RX transactions
+        for transaction in dma_transactions {
+            if transaction.options().is_rx {
+                let src_offset = transaction.offset();
+                let src_len = transaction.size() as usize;
+
+                let dest_addr = transaction.original_addr();
+                let dest_len = src_len;
+
+                // Ensure that the source slice is within the allocated buffer range
+                if src_offset + src_len > self.mem.as_slice().len() {
+                    return Err(DmaError::UnmapFailed);
                 }
-            })
-            .collect();
+
+                let src_slice = &self.mem.as_slice()[src_offset..src_offset + src_len];
+                // Convert the effective offset into a destination page and an offset within that page.
+                let dest_page = src_offset / PAGE_SIZE32 as usize;
+                let offset_in_page = src_offset % PAGE_SIZE32 as usize;
+
+                // Use guest_memory.write to copy back safely
+                guest_memory
+                    .write_range_from_atomic(
+                        &mem.subrange(dest_page * PAGE_SIZE32 as usize + offset_in_page, dest_len),
+                        src_slice,
+                    )
+                    .map_err(|_| DmaError::UnmapFailed)?;
+
+                // Store the bounce buffer for later deallocation
+                bounce_buffers.push(DmaBuffer{
+                    offset: src_offset,
+                    size: src_len,
+                });
+            }
+
+            // Collect ranges for unmapping if pinned
+            if transaction.backing() == MemoryBacking::Pinned {
+                ranges.push(MemoryRange::new(
+                    transaction.original_addr()
+                        ..transaction.original_addr() + transaction.size(),
+                ));
+            }
+        }
+
+        // Unmap the DMA transactions
         if !ranges.is_empty() {
             self._dma_manager_inner
                 .lock()
                 .manager_unmap_dma_transaction(&ranges)
                 .map_err(|_| DmaError::UnmapFailed)?;
         }
+
+        // Free all bounce buffers after copying data back
+        for buffer in bounce_buffers {
+            self.free(buffer);
+        }
+
         Ok(())
     }
 }

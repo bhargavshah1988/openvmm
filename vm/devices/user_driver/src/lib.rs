@@ -97,7 +97,7 @@ pub struct DmaTransectionOptions {
 pub struct DmaTransactionHandler {
     pub transactions: Vec<DmaTransaction>,
 }
-
+#[derive(Debug, Clone)]
 pub struct ContiguousBuffer {
     offset: usize,
     len: u64,
@@ -133,6 +133,18 @@ impl DmaTransaction {
     }
     pub fn original_addr(&self) -> u64 {
         self.original_addr
+    }
+
+    pub fn options(&self) -> DmaTransectionOptions {
+        self.options.clone()
+    }
+
+    pub fn offset(&self) -> usize {
+        self.dma_buffer.offset
+    }
+
+    pub fn contiguous_buffer(&self) -> ContiguousBuffer {
+        self.dma_buffer.clone()
     }
 }
 
