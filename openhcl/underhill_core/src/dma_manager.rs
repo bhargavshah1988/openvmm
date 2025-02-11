@@ -294,7 +294,8 @@ impl user_driver::DmaClient for DmaClientImpl {
                 let total_size: u64 = ranges.iter().map(|range| range.len() as u64).sum();
 
                 // Create a single DmaBuffer that spans all the ranges
-                let combined_buffer = DmaBuffer::new(bounce_buffer.id, bounce_buffer.offset, total_size as usize);
+                let combined_buffer =
+                    DmaBuffer::new(bounce_buffer.id, bounce_buffer.offset, total_size as usize);
 
                 // Set up for DMA transactions
                 let mut cumulative_offset: usize = 0; // To track the offset within the combined buffer
@@ -334,7 +335,7 @@ impl user_driver::DmaClient for DmaClientImpl {
 
         // Copy data back from the bounce buffer to user memory for RX transactions
         for transaction in dma_transactions {
-            if transaction.options().is_rx  && transaction.backing() == MemoryBacking::BounceBuffer {
+            if transaction.options().is_rx && transaction.backing() == MemoryBacking::BounceBuffer {
                 let src_offset = transaction.offset();
                 let src_len = transaction.size() as usize;
 
@@ -360,17 +361,18 @@ impl user_driver::DmaClient for DmaClientImpl {
                     .map_err(|_| DmaError::UnmapFailed)?;
 
                 // Store the bounce buffer for later deallocation
-                bounce_buffers.push(DmaBuffer{
+                bounce_buffers.push(DmaBuffer {
                     id: transaction.id(),
                     offset: src_offset,
                     size: src_len,
                 });
-            }
-            else if transaction.options().is_tx && transaction.backing() == MemoryBacking::BounceBuffer {
-                bounce_buffers.push(DmaBuffer{
+            } else if transaction.options().is_tx
+                && transaction.backing() == MemoryBacking::BounceBuffer
+            {
+                bounce_buffers.push(DmaBuffer {
                     id: transaction.id(),
-                    offset:transaction.offset(),
-                    size:transaction.size() as usize,
+                    offset: transaction.offset(),
+                    size: transaction.size() as usize,
                 });
             }
 
@@ -419,18 +421,22 @@ struct BounceBufferAllocator {
 }
 impl BounceBufferAllocator {
     fn new(size: usize) -> Self {
-        let free_list = vec![DmaBuffer { id: 0, offset: 0, size }];
-        Self { free_list, allocated: Vec::new(), next_id: 1 }
+        let free_list = vec![DmaBuffer {
+            id: 0,
+            offset: 0,
+            size,
+        }];
+        Self {
+            free_list,
+            allocated: Vec::new(),
+            next_id: 1,
+        }
     }
 
     /// Attempt to allocate a block of at least `size` bytes.
     /// Returns the offset into the MemoryBlock if successful, or None if not.
     fn malloc(&mut self, size: usize) -> Option<(u64, usize)> {
-        if let Some(pos) = self
-            .free_list
-            .iter()
-            .position(|block| block.size >= size)
-        {
+        if let Some(pos) = self.free_list.iter().position(|block| block.size >= size) {
             let block = self.free_list.remove(pos);
             let allocated_id = self.next_id;
 
@@ -447,11 +453,14 @@ impl BounceBufferAllocator {
 
             // If there’s remaining space, add back the unallocated portion
             if block.size > size {
-                self.free_list.insert(pos, DmaBuffer {
-                    id: 0,
-                    offset: block.offset + size,
-                    size: block.size - size
-                });
+                self.free_list.insert(
+                    pos,
+                    DmaBuffer {
+                        id: 0,
+                        offset: block.offset + size,
+                        size: block.size - size,
+                    },
+                );
             }
 
             Some((allocated_id, block.offset))
@@ -470,20 +479,27 @@ impl BounceBufferAllocator {
 
     fn insert_into_free_list(&mut self, new_block: DmaBuffer) {
         // Insert the new block in the sorted list using binary search
-        let pos = match self.free_list.binary_search_by_key(&new_block.offset, |b| b.offset) {
+        let pos = match self
+            .free_list
+            .binary_search_by_key(&new_block.offset, |b| b.offset)
+        {
             Ok(pos) | Err(pos) => pos, // `Err(pos)` gives us the insertion point
         };
         self.free_list.insert(pos, new_block);
 
         // Merge with the previous block if adjacent
-        if pos > 0 && self.free_list[pos - 1].offset + self.free_list[pos - 1].size == self.free_list[pos].offset {
+        if pos > 0
+            && self.free_list[pos - 1].offset + self.free_list[pos - 1].size
+                == self.free_list[pos].offset
+        {
             self.free_list[pos - 1].size += self.free_list[pos].size;
             self.free_list.remove(pos);
         }
 
         // Merge with the next block if adjacent
         if pos < self.free_list.len() - 1
-            && self.free_list[pos].offset + self.free_list[pos].size == self.free_list[pos + 1].offset
+            && self.free_list[pos].offset + self.free_list[pos].size
+                == self.free_list[pos + 1].offset
         {
             self.free_list[pos].size += self.free_list[pos + 1].size;
             self.free_list.remove(pos + 1);
@@ -491,13 +507,14 @@ impl BounceBufferAllocator {
 
         // Check if the last block can be merged with the preceding block if the new block was inserted at the end
         if pos == self.free_list.len() - 1 && self.free_list.len() > 1 {
-            if self.free_list[pos - 1].offset + self.free_list[pos - 1].size == self.free_list[pos].offset {
+            if self.free_list[pos - 1].offset + self.free_list[pos - 1].size
+                == self.free_list[pos].offset
+            {
                 self.free_list[pos - 1].size += self.free_list[pos].size;
                 self.free_list.remove(pos);
             }
         }
     }
-
 }
 
 #[cfg(test)]
@@ -611,5 +628,4 @@ mod tests {
         assert_eq!(allocator.free_list.len(), 1); // Entire buffer should be free again
         assert_eq!(allocator.free_list[0].size, 1024);
     }
-
 }

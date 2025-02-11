@@ -37,7 +37,6 @@ virt.workspace = true
 vmm_core.workspace = true
 vmm_core_defs.workspace = true
 state_unit.workspace = true
-event-listener.workspace = true
 vm_loader.workspace = true
 vnc_worker_defs.workspace = true
 chipset.workspace = true

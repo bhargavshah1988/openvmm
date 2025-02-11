@@ -7063,7 +7063,6 @@ dependencies = [
  "disk_blockdevice",
  "disk_get_vmgs",
  "disk_nvme",
- "event-listener",
  "firmware_pcat",
  "firmware_uefi",
  "firmware_uefi_custom_vars",
