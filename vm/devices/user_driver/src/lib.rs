@@ -97,13 +97,10 @@ pub struct DmaTransectionOptions {
 pub struct DmaTransactionHandler {
     pub transactions: Vec<DmaTransaction>,
 }
-#[derive(Debug, Clone)]
-//pub struct DmaBuffer {
-//    offset: usize,
-//    len: u64,
-//}
 
+#[derive(Debug, Clone, Copy)]
 pub struct DmaBuffer {
+    pub id: u64,
     pub offset: usize,
     pub size: usize,
 }
@@ -114,6 +111,7 @@ pub struct DmaTransaction {
     backing: MemoryBacking,
     options: DmaTransectionOptions,
 }
+
 impl DmaTransaction {
     /// Creates a new `DmaTransaction` with controlled field access
     pub fn new(
@@ -151,6 +149,10 @@ impl DmaTransaction {
     pub fn contiguous_buffer(&self) -> DmaBuffer {
         self.dma_buffer.clone()
     }
+
+    pub fn id(&self) -> u64 {
+        self.dma_buffer.id
+    }
 }
 
 pub trait DmaClient: Send + Sync {
@@ -176,7 +178,7 @@ pub trait DmaClient: Send + Sync {
 }
 
 impl DmaBuffer {
-    pub fn new(offset: usize, size: usize) -> Self {
-        Self { offset, size }
+    pub fn new(id: u64, offset: usize, size: usize) -> Self {
+        Self { id, offset, size }
     }
 }

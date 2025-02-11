@@ -85,7 +85,7 @@ impl GlobalDmaManager {
         let client = DmaClientImpl {
             _dma_manager_inner: inner.clone(),
             dma_buffer_allocator: Some(allocator.clone()),
-            allocator: Mutex::new(SimpleAllocator::new(mem.len())),
+            allocator: Mutex::new(BounceBufferAllocator::new(mem.len())),
             mem,
             condvar: Condvar::new(),
         };
@@ -107,7 +107,7 @@ pub struct DmaClientImpl {
     /// This is added to support map/pin functionality in the future.
     _dma_manager_inner: Arc<Mutex<GlobalDmaManagerInner>>,
     dma_buffer_allocator: Option<Arc<dyn VfioDmaBuffer>>,
-    allocator: Mutex<SimpleAllocator>,
+    allocator: Mutex<BounceBufferAllocator>,
     mem: MemoryBlock,
     condvar: Condvar,
 }
@@ -117,8 +117,8 @@ impl DmaClientImpl {
     fn allocate(&self, size: usize) -> DmaBuffer {
         let mut alloc = self.allocator.lock();
         loop {
-            if let Some(offset) = alloc.malloc(size) {
-                return DmaBuffer { offset, size };
+            if let Some((id, offset)) = alloc.malloc(size) {
+                return DmaBuffer { id, offset, size };
             }
             // Wait for memory to be freed.
             self.condvar.wait(&mut alloc);
@@ -128,7 +128,7 @@ impl DmaClientImpl {
     /// Free a previously allocated DMA buffer and notify waiting threads.
     fn free(&self, buffer: DmaBuffer) {
         let mut alloc = self.allocator.lock();
-        alloc.free(buffer.offset, buffer.size);
+        alloc.free(buffer.id);
         // Wake up one waiting thread.
         self.condvar.notify_one();
     }
@@ -207,7 +207,7 @@ impl user_driver::DmaClient for DmaClientImpl {
                     let range_size = range.len(); // u64
                     let transaction_offset = bounce_buffer.offset + cumulative_offset;
 
-                    let contig_buf = DmaBuffer::new(transaction_offset, range_size as usize);
+                    let contig_buf = DmaBuffer::new(0, transaction_offset, range_size as usize);
 
                     cumulative_offset += range_size as usize;
 
@@ -238,7 +238,7 @@ impl user_driver::DmaClient for DmaClientImpl {
                 let dma_transactions = ranges
                     .iter()
                     .map(|range| {
-                        let contig_buf = DmaBuffer::new(0, range.len().try_into().unwrap());
+                        let contig_buf = DmaBuffer::new(0, 0, range.len().try_into().unwrap());
 
                         DmaTransaction::new(
                             contig_buf,
@@ -291,27 +291,32 @@ impl user_driver::DmaClient for DmaClientImpl {
                         .map_err(|e| DmaError::BounceBufferFailed)?;
                 }
 
-                let mut cumulative_offset: usize = 0;
+                // Calculate the total size of the combined ranges
+                let total_size: u64 = ranges.iter().map(|range| range.len() as u64).sum();
+
+                // Create a single DmaBuffer that spans all the ranges
+                let combined_buffer = DmaBuffer::new(bounce_buffer.id, bounce_buffer.offset, total_size as usize);
+
+                // Set up for DMA transactions
+                let mut cumulative_offset: usize = 0; // To track the offset within the combined buffer
                 for range in ranges {
-                    // Each range's size as a u64.
-                    let range_size = range.len(); // u64
+                    // Calculate the size for the current range
+                    let range_size = range.len() as u64;
 
-                    let transaction_offset = bounce_buffer.offset + cumulative_offset;
+                    // Calculate the offset for the current range within the combined buffer
+                    let transaction_offset = combined_buffer.offset + cumulative_offset;
 
-                    let contig_buf = DmaBuffer::new(transaction_offset, range_size.try_into().unwrap());
-
-                    // Create a DMA transaction.
-                    // The original_addr is taken from the guest range's starting address.
+                    // Create a DMA transaction for the current range using the same combined buffer
                     transactions.push(DmaTransaction::new(
-                        contig_buf,
+                        combined_buffer.clone(), // Use the same buffer for all ranges
                         range.start(),
                         options.clone(),
                         MemoryBacking::BounceBuffer,
                     ));
 
+                    // Update the cumulative offset for the next range
                     cumulative_offset += range_size as usize;
                 }
-
                 dma_transaction_handler = user_driver::DmaTransactionHandler { transactions };
             }
         }
@@ -357,12 +362,14 @@ impl user_driver::DmaClient for DmaClientImpl {
 
                 // Store the bounce buffer for later deallocation
                 bounce_buffers.push(DmaBuffer{
+                    id: transaction.id(),
                     offset: src_offset,
                     size: src_len,
                 });
             }
             else if transaction.options().is_tx && transaction.backing() == MemoryBacking::BounceBuffer {
                 bounce_buffers.push(DmaBuffer{
+                    id: transaction.id(),
                     offset:transaction.offset(),
                     size:transaction.size() as usize,
                 });
@@ -406,70 +413,89 @@ impl DmaClientSpawner {
     }
 }
 
-struct SimpleAllocator {
-    free_list: Vec<Block>, // Sorted by offset.
+struct BounceBufferAllocator {
+    free_list: Vec<DmaBuffer>,
+    allocated: Vec<DmaBuffer>,
+    next_id: u64,
 }
-
-#[derive(Debug, Clone, Copy)]
-struct Block {
-    offset: usize,
-    size: usize,
-}
-
-impl SimpleAllocator {
+impl BounceBufferAllocator {
     fn new(size: usize) -> Self {
-        // Initially, the entire memory is free.
-        let free_list = vec![Block { offset: 0, size }];
-        Self { free_list }
+        let free_list = vec![DmaBuffer { id: 0, offset: 0, size }];
+        Self { free_list, allocated: Vec::new(), next_id: 1 }
     }
 
     /// Attempt to allocate a block of at least `size` bytes.
     /// Returns the offset into the MemoryBlock if successful, or None if not.
-    fn malloc(&mut self, size: usize) -> Option<usize> {
-        for i in 0..self.free_list.len() {
-            let block = self.free_list[i];
-            if block.size >= size {
-                let allocated_offset = block.offset;
-                if block.size == size {
-                    // Perfect fit: remove the block.
-                    self.free_list.remove(i);
-                } else {
-                    // Otherwise, shrink the free block.
-                    self.free_list[i].offset += size;
-                    self.free_list[i].size -= size;
-                }
-                return Some(allocated_offset);
+    fn malloc(&mut self, size: usize) -> Option<(u64, usize)> {
+        if let Some(pos) = self
+            .free_list
+            .iter()
+            .position(|block| block.size >= size)
+        {
+            let block = self.free_list.remove(pos);
+            let allocated_id = self.next_id;
+            self.next_id = self.next_id.wrapping_add(1);
+
+            let allocated_block = DmaBuffer {
+                id: allocated_id,
+                offset: block.offset,
+                size,
+            };
+
+            self.allocated.push(allocated_block);
+            self.allocated.sort_by_key(|b| b.offset); // Keep allocations sorted
+
+            // If there’s remaining space, add back the unallocated portion
+            if block.size > size {
+                self.free_list.insert(pos, DmaBuffer {
+                    id: 0,
+                    offset: block.offset + size,
+                    size: block.size - size
+                });
             }
+
+            Some((allocated_id, block.offset))
+        } else {
+            None
         }
-        None
     }
 
     /// Free a previously allocated block.
-    fn free(&mut self, offset: usize, size: usize) {
-        let new_block = Block { offset, size };
-        let mut pos = 0;
-        while pos < self.free_list.len() && self.free_list[pos].offset < offset {
-            pos += 1;
+    fn free(&mut self, id: u64) {
+        if let Some(pos) = self.allocated.iter().position(|block| block.id == id) {
+            let freed_block = self.allocated.remove(pos);
+            self.insert_into_free_list(freed_block);
         }
+    }
+
+    fn insert_into_free_list(&mut self, new_block: DmaBuffer) {
+        // Insert the new block in the sorted list using binary search
+        let pos = match self.free_list.binary_search_by_key(&new_block.offset, |b| b.offset) {
+            Ok(pos) | Err(pos) => pos, // `Err(pos)` gives us the insertion point
+        };
         self.free_list.insert(pos, new_block);
-        // Try to coalesce with the previous block.
-        if pos > 0 {
-            let prev = pos - 1;
-            if self.free_list[prev].offset + self.free_list[prev].size == self.free_list[pos].offset
-            {
-                self.free_list[prev].size += self.free_list[pos].size;
-                self.free_list.remove(pos);
-                pos = prev;
-            }
+
+        // Merge with the previous block if adjacent
+        if pos > 0 && self.free_list[pos - 1].offset + self.free_list[pos - 1].size == self.free_list[pos].offset {
+            self.free_list[pos - 1].size += self.free_list[pos].size;
+            self.free_list.remove(pos);
         }
-        // Try to coalesce with the next block.
-        if pos < self.free_list.len() - 1 {
-            if self.free_list[pos].offset + self.free_list[pos].size
-                == self.free_list[pos + 1].offset
-            {
-                self.free_list[pos].size += self.free_list[pos + 1].size;
-                self.free_list.remove(pos + 1);
+
+        // Merge with the next block if adjacent
+        if pos < self.free_list.len() - 1
+            && self.free_list[pos].offset + self.free_list[pos].size == self.free_list[pos + 1].offset
+        {
+            self.free_list[pos].size += self.free_list[pos + 1].size;
+            self.free_list.remove(pos + 1);
+        }
+
+        // Check if the last block can be merged with the preceding block if the new block was inserted at the end
+        if pos == self.free_list.len() - 1 && self.free_list.len() > 1 {
+            if self.free_list[pos - 1].offset + self.free_list[pos - 1].size == self.free_list[pos].offset {
+                self.free_list[pos - 1].size += self.free_list[pos].size;
+                self.free_list.remove(pos);
             }
         }
     }
+
 }
