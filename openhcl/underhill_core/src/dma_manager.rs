@@ -6,7 +6,6 @@
 //! The `GlobalDmaManager` creates DMA buffers for different devices.
 //! The `DmaClientImpl` struct implements the `user_driver::DmaClient` trait.
 
-use event_listener::Event;
 use guestmem::ranges::PagedRange;
 use guestmem::GuestMemory;
 use memory_range::MemoryRange;
@@ -434,6 +433,7 @@ impl BounceBufferAllocator {
         {
             let block = self.free_list.remove(pos);
             let allocated_id = self.next_id;
+
             self.next_id = self.next_id.wrapping_add(1);
 
             let allocated_block = DmaBuffer {
@@ -496,6 +496,120 @@ impl BounceBufferAllocator {
                 self.free_list.remove(pos);
             }
         }
+    }
+
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_allocator_initialization() {
+        let allocator = BounceBufferAllocator::new(1024);
+        assert_eq!(allocator.free_list.len(), 1);
+        assert_eq!(allocator.free_list[0].size, 1024);
+        assert_eq!(allocator.allocated.len(), 0);
+    }
+
+    #[test]
+    fn test_malloc_success() {
+        let mut allocator = BounceBufferAllocator::new(1024);
+        let result = allocator.malloc(256);
+        assert!(result.is_some());
+        let (_id, offset) = result.unwrap();
+        assert_eq!(offset, 0);
+        assert_eq!(allocator.allocated.len(), 1);
+        assert_eq!(allocator.free_list.len(), 1);
+        assert_eq!(allocator.free_list[0].offset, 256);
+        assert_eq!(allocator.free_list[0].size, 768);
+    }
+
+    #[test]
+    fn test_malloc_fail() {
+        let mut allocator = BounceBufferAllocator::new(512);
+        let result = allocator.malloc(1024);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_free_merging() {
+        let mut allocator = BounceBufferAllocator::new(1024);
+        let (id1, _) = allocator.malloc(256).unwrap();
+        let (id2, _) = allocator.malloc(256).unwrap();
+        allocator.free(id1);
+        allocator.free(id2);
+        assert_eq!(allocator.free_list.len(), 1);
+        assert_eq!(allocator.free_list[0].size, 1024);
+    }
+
+    #[test]
+    fn test_id_wrap_around() {
+        let mut allocator = BounceBufferAllocator::new(1024);
+        allocator.next_id = u64::MAX;
+        let (id, _) = allocator.malloc(256).unwrap();
+        assert_eq!(id, u64::MAX);
+        assert_eq!(allocator.next_id, 0); // Wrapped around to 0
+    }
+
+    #[test]
+    fn test_free_list_merging_with_adjacent_blocks() {
+        let mut allocator = BounceBufferAllocator::new(1024);
+        let (id1, _) = allocator.malloc(256).unwrap();
+        let (id2, _) = allocator.malloc(256).unwrap();
+        allocator.free(id1);
+        allocator.free(id2);
+        assert_eq!(allocator.free_list.len(), 1);
+        assert_eq!(allocator.free_list[0].size, 1024);
+    }
+
+    #[test]
+    fn test_out_of_order_allocation_and_free() {
+        let mut allocator = BounceBufferAllocator::new(1024);
+
+        let (_, offset1) = allocator.malloc(256).unwrap();
+        let (id2, offset2) = allocator.malloc(512).unwrap();
+        let (_, offset3) = allocator.malloc(128).unwrap();
+
+        assert_eq!(offset1, 0);
+        assert_eq!(offset2, 256);
+        assert_eq!(offset3, 768);
+
+        allocator.free(id2); // Free the middle block
+        assert_eq!(allocator.free_list.len(), 2);
+
+        let (_, offset4) = allocator.malloc(512).unwrap();
+        assert_eq!(offset4, 256); // Should reuse freed block
+    }
+
+    #[test]
+    fn test_freeing_non_contiguous_blocks() {
+        let mut allocator = BounceBufferAllocator::new(1024);
+
+        let (id1, _) = allocator.malloc(128).unwrap();
+        let (_) = allocator.malloc(256).unwrap();
+        let (id3, _) = allocator.malloc(128).unwrap();
+
+        allocator.free(id1);
+        allocator.free(id3);
+
+        assert_eq!(allocator.free_list.len(), 2); // Two freed blocks should be separate
+    }
+
+    #[test]
+    fn test_merge_blocks_after_out_of_order_free() {
+        let mut allocator = BounceBufferAllocator::new(1024);
+
+        let (id1, _) = allocator.malloc(256).unwrap();
+        let (id2, _) = allocator.malloc(256).unwrap();
+        let (id3, _) = allocator.malloc(512).unwrap();
+
+        allocator.free(id1);
+        allocator.free(id3);
+        allocator.free(id2); // This should merge with previous free blocks
+
+        assert_eq!(allocator.free_list.len(), 1); // Entire buffer should be free again
+        assert_eq!(allocator.free_list[0].size, 1024);
     }
 
 }
