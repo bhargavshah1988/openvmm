@@ -232,6 +232,7 @@ impl user_driver::DmaClient for DmaClientImpl {
         let transactions ;
 
         if options.is_rx {
+            // Try to pin it first
             return self.allocate_bounce_buffer(&ranges, mem.len(), options);
         }
 
@@ -354,6 +355,7 @@ struct BounceBufferAllocator {
     allocated: Vec<DmaBuffer>,
     next_id: u64,
 }
+
 impl BounceBufferAllocator {
     fn new(size: usize) -> Self {
         let free_list = vec![DmaBuffer {
@@ -539,7 +541,7 @@ mod tests {
         let mut allocator = BounceBufferAllocator::new(1024);
 
         let (id1, _) = allocator.malloc(128).unwrap();
-        let (_) = allocator.malloc(256).unwrap();
+        let _ = allocator.malloc(256).unwrap();
         let (id3, _) = allocator.malloc(128).unwrap();
 
         allocator.free(id1);

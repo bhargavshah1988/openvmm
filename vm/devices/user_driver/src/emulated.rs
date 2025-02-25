@@ -297,18 +297,18 @@ impl DmaClient for EmulatedDmaAllocator {
 
     fn map_dma_ranges(
         &self,
-        guest_memory: &GuestMemory,
-        mem: PagedRange<'_>,
-        options: crate::DmaTransectionOptions,
+        _guest_memory: &GuestMemory,
+        _mem: PagedRange<'_>,
+        _options: crate::DmaTransectionOptions,
     ) -> Result<crate::DmaTransactionHandler, crate::DmaError> {
         unimplemented!()
     }
 
     fn unmap_dma_ranges(
         &self,
-        guest_memory: &GuestMemory,
-        mem: PagedRange<'_>,
-        dma_transactions: &[crate::DmaTransaction],
+        _guest_memory: &GuestMemory,
+        _mem: PagedRange<'_>,
+        _dma_transactions: &[crate::DmaTransaction],
     ) -> Result<(), crate::DmaError> {
         unimplemented!()
     }
